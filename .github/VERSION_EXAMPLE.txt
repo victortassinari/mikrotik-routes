@@ -1,0 +1,18 @@
+# Exemplo de versionamento semântico
+# Descomente e ajuste conforme necessário
+
+# Para criar uma release versionada manualmente:
+# git tag -a v1.0.0 -m "Release 1.0.0 - Versão inicial estável"
+# git push origin v1.0.0
+
+# Padrão de versionamento:
+# v1.0.0 - Major.Minor.Patch
+# Major: Mudanças incompatíveis com versões anteriores
+# Minor: Novas funcionalidades compatíveis
+# Patch: Correções de bugs
+
+# Exemplos:
+# v1.0.0 - Primeira versão estável
+# v1.1.0 - Adicionado suporte a HTTPS
+# v1.1.1 - Corrigido bug no ping de links DHCP
+# v2.0.0 - Refatoração completa da estrutura
