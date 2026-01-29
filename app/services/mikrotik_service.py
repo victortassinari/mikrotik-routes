@@ -52,6 +52,10 @@ class MikrotikService:
         unreachable_links = []
         pings = {}  # {comment: ms}
         
+        # Initialize all pings as "checking" to show user that verification is in progress
+        for link in discovered_links:
+            pings[link['comment']] = "checking"
+        
         connection = self._get_connection()
         try:
             api = connection.get_api()

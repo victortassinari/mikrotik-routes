@@ -3,6 +3,7 @@ import threading
 from app.config import settings
 from app.services.mikrotik_service import MikrotikService
 from app.services.network_service import NetworkService
+from app.services.startup_service import StartupService
 import pystray
 from pystray import MenuItem as item
 import os
@@ -18,6 +19,7 @@ class MainWindow(ctk.CTk):
         super().__init__()
         self.mikrotik = MikrotikService(host, user, password, use_ssl)
         self.network = NetworkService()
+        self.startup_service = StartupService()
         
         self.title("MikroTik Link Dashboard")
         self.resizable(False, False)
@@ -143,6 +145,21 @@ class MainWindow(ctk.CTk):
                                      fg_color=settings.COLORS["success"], hover_color="#219150",
                                      font=("Segoe UI", 12, "bold"), height=50, corner_radius=10,
                                      command=self.enable_all_links)
+        
+        # Settings Section (Startup)
+        if self.startup_service.is_exe():
+            self.settings_container = ctk.CTkFrame(self, fg_color="transparent")
+            self.settings_container.pack(pady=(5, 15), padx=35, fill="x")
+            
+            self.startup_var = ctk.BooleanVar(value=self.startup_service.is_enabled())
+            self.startup_chk = ctk.CTkCheckBox(self.settings_container, text="Iniciar junto com o Windows", 
+                                             font=("Segoe UI", 12), text_color=settings.COLORS["text"],
+                                             command=self.toggle_startup,
+                                             variable=self.startup_var,
+                                             onvalue=True, offvalue=False,
+                                             checkbox_height=18, checkbox_width=18, border_width=2,
+                                             hover_color=settings.COLORS["success"], fg_color=settings.COLORS["success"])
+            self.startup_chk.pack(anchor="w")
         
         # Loading Indicator
         self.loading_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -306,6 +323,11 @@ class MainWindow(ctk.CTk):
     def _fetch_status(self):
         current_ip = self.network.get_public_ip()
         
+        # Show intermediate "checking" state first for better UX
+        # This prevents links from showing as offline while pings are in progress
+        checking_pings = {link['comment']: 'checking' for link in self.links}
+        self.after(0, lambda: self._update_ping_status(checking_pings))
+        
         try:
             active_link, mode, unreachable_links, pings = self.mikrotik.get_status(self.links)
         except Exception as e:
@@ -316,7 +338,27 @@ class MainWindow(ctk.CTk):
             pings = {}
 
         self.after(0, lambda: self._update_ui_status(active_link, mode, current_ip, unreachable_links, pings))
+    
+    def _update_ping_status(self, pings):
+        """Update only ping labels without touching other UI elements."""
+        try:
+            for comment, ping_lbl in self.ping_labels.items():
+                val_raw = str(pings.get(comment, "--")).lower()
+                
+                if val_raw == "checking":
+                    ping_lbl.configure(text="⏳", text_color=settings.COLORS["text_dim"])
+                # Other states will be handled by full _update_ui_status
+        except Exception as e:
+            logger.error(f"Error in _update_ping_status: {e}")
         
+    def toggle_startup(self):
+        enabled = self.startup_var.get()
+        success = self.startup_service.set_enabled(enabled)
+        if not success:
+            # Revert if failed
+            self.startup_var.set(not enabled)
+            messagebox.showerror("Erro", "Não foi possível alterar a configuração de inicialização.\nVerifique as permissões.")
+
     def _update_tray_menu(self, active_link, mode, unreachable_links):
         if not self.tray_icon:
             return
@@ -390,36 +432,44 @@ class MainWindow(ctk.CTk):
                     val_raw = str(pings.get(comment, "--")).lower()
                     color = settings.COLORS["text_dim"]
                     
-                    ms_val = None
-                    # Robust numeric check: extract digits and dots
-                    clean_val = "".join(filter(lambda x: x.isdigit() or x == '.', val_raw))
-                    
-                    if clean_val:
-                        try:
-                            ms_val = float(clean_val)
-                            # Format: no decimals if .0, else 1 decimal
-                            if ms_val == int(ms_val):
-                                val = f"{int(ms_val)} ms"
-                            else:
-                                val = f"{ms_val:.1f} ms"
-                        except ValueError:
-                            val = "-- ms"
-                    elif val_raw in ["timeout", "err"]:
-                        val = "-"
-                        color = settings.COLORS["danger"]
+                    # Handle "checking" state - ping is still in progress
+                    if val_raw == "checking":
+                        val = "⏳"
+                        color = settings.COLORS["text_dim"]
                     else:
-                        val = "-" # Default for unparseable strings
+                        ms_val = None
+                        # Robust numeric check: extract digits and dots
+                        clean_val = "".join(filter(lambda x: x.isdigit() or x == '.', val_raw))
+                        
+                        if clean_val:
+                            try:
+                                ms_val = float(clean_val)
+                                # Format: no decimals if .0, else 1 decimal
+                                if ms_val == int(ms_val):
+                                    val = f"{int(ms_val)} ms"
+                                else:
+                                    val = f"{ms_val:.1f} ms"
+                            except ValueError:
+                                val = "-- ms"
+                        elif val_raw in ["timeout", "err"]:
+                            val = "-"
+                            color = settings.COLORS["danger"]
+                        else:
+                            val = "-" # Default for unparseable strings
 
-                    if ms_val is not None:
-                        if ms_val > 200: color = settings.COLORS["danger"]
-                        elif ms_val > 100: color = settings.COLORS["warning"]
-                        else: color = settings.COLORS["success"]
+                        if ms_val is not None:
+                            if ms_val > 200: color = settings.COLORS["danger"]
+                            elif ms_val > 100: color = settings.COLORS["warning"]
+                            else: color = settings.COLORS["success"]
                     
                     self.ping_labels[comment].configure(text=val, text_color=color)
 
                 # Check if link is offline (unreachable OR failed ping)
-                ping_failed = pings.get(comment, "") in ["err", "timeout"]
-                is_offline = is_unreachable or ping_failed
+                # Don't mark as offline if still checking
+                ping_status = pings.get(comment, "")
+                ping_failed = ping_status in ["err", "timeout"]
+                is_checking = ping_status == "checking"
+                is_offline = is_unreachable or (ping_failed and not is_checking)
                 
                 if is_offline:
                     btn.configure(
